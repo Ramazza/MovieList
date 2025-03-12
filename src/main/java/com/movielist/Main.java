@@ -2,36 +2,46 @@ package com.movielist;
 
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 import java.io.InputStream;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
-
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.util.Scanner;
+import java.util.*;
+import java.util.concurrent.*;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
-
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
-
 import io.github.cdimascio.dotenv.Dotenv;
 
+@SpringBootApplication
 public class Main {
+    private static final List<Movie> movies = new CopyOnWriteArrayList<>(); // Lista global de filmes
+
     public static void main(String[] args) {
+        SpringApplication.run(Main.class, args);
+        carregarFilmes();
+    }
 
-        String filePath = "moviess.xlsx";
+    public static void carregarFilmes() {
+        String filePath = "movies.xlsx";
+        List<Movie> loadedMovies = lerExcel(filePath);
+        movies.clear();
 
-        List<Movie> movies = lerExcel(filePath);
+        Collections.shuffle(loadedMovies); // Embaralha os filmes ao iniciar
+        movies.addAll(loadedMovies);
 
         int THREAD_COUNT = 10;
         ExecutorService executor = Executors.newFixedThreadPool(THREAD_COUNT);
 
         for (Movie movie : movies) {
-            executor.execute(() -> fetchMovieDetails(movie));
+            executor.execute(() -> {
+                if (movie.getPosterPath() == null || movie.getPosterPath().isEmpty()) {
+                    fetchMovieDetails(movie);
+                }
+            });
         }
 
         executor.shutdown();
@@ -40,13 +50,24 @@ public class Main {
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
-
-        for (Movie m : movies) {
-            System.out.println(m);
-        }
     }
 
-    public static List<Movie> lerExcel(String fileName){
+    public static List<Movie> getMovies() {
+        return movies;
+    }
+
+    public static List<Movie> getPaginatedMovies(int page, int size) {
+        int startIndex = (page - 1) * size;
+        int endIndex = Math.min(startIndex + size, movies.size());
+
+        if (startIndex >= movies.size()) {
+            return Collections.emptyList();
+        }
+
+        return movies.subList(startIndex, endIndex);
+    }
+
+    public static List<Movie> lerExcel(String fileName) {
         List<Movie> list = new ArrayList<>();
 
         try (InputStream file = Main.class.getClassLoader().getResourceAsStream(fileName);
@@ -55,16 +76,41 @@ public class Main {
             Sheet sheet = workbook.getSheetAt(0);
 
             for (Row row : sheet) {
-                if (row.getRowNum() == 0) continue;
+                if (row.getRowNum() == 0) continue; // Ignorar cabeçalho
 
                 Cell cellName = row.getCell(0);
                 Cell cellDate = row.getCell(1);
                 Cell cellScore = row.getCell(2);
 
                 if (cellName != null && cellDate != null && cellScore != null) {
-                    String name = cellName.getStringCellValue();
-                    int date = (int) cellDate.getNumericCellValue();
-                    int score = (int) cellScore.getNumericCellValue();
+                    String name = cellName.getCellType() == CellType.STRING ?
+                            cellName.getStringCellValue().trim() :
+                            String.valueOf((int) cellName.getNumericCellValue());
+
+                    if (name.isEmpty()) continue;
+
+                    int date = 0;
+                    if (cellDate.getCellType() == CellType.NUMERIC) {
+                        date = (int) cellDate.getNumericCellValue();
+                    } else if (cellDate.getCellType() == CellType.STRING && !cellDate.getStringCellValue().trim().isEmpty()) {
+                        try {
+                            date = Integer.parseInt(cellDate.getStringCellValue().trim());
+                        } catch (NumberFormatException e) {
+                            System.err.println("Erro ao converter data: " + cellDate.getStringCellValue());
+                        }
+                    }
+
+                    double score = 0.0;
+                    if (cellScore.getCellType() == CellType.NUMERIC) {
+                        score = cellScore.getNumericCellValue();
+                    } else if (cellScore.getCellType() == CellType.STRING && !cellScore.getStringCellValue().trim().isEmpty()) {
+                        String scoreStr = cellScore.getStringCellValue().trim().replace(",", ".");
+                        try {
+                            score = Double.parseDouble(scoreStr);
+                        } catch (NumberFormatException e) {
+                            System.err.println("Erro ao converter nota: " + scoreStr);
+                        }
+                    }
 
                     Movie movie = new Movie(name, date, score);
                     list.add(movie);
@@ -80,9 +126,8 @@ public class Main {
 
     public static void fetchMovieDetails(Movie movie) {
         String apiKey = Config.getApiKey();
-        String baseUrl = "https://api.themoviedb.org/3/search/movie?query=";
         String query = movie.getName().replace(" ", "%20");
-        String urlString = baseUrl + query + "&api_key=" + apiKey;
+        String urlString = "https://api.themoviedb.org/3/search/movie?query=" + query + "&api_key=" + apiKey + "&language=pt-BR";
 
         try {
             URL url = new URL(urlString);
@@ -91,7 +136,6 @@ public class Main {
             conn.setRequestProperty("Accept", "application/json");
 
             if (conn.getResponseCode() != 200) {
-                System.out.println("Erro na conexão: " + conn.getResponseCode());
                 return;
             }
 
@@ -107,10 +151,9 @@ public class Main {
 
             if (results.length() > 0) {
                 JSONObject firstResult = results.getJSONObject(0);
-                movie.setPosterPath("https://image.tmdb.org/t/p/w500" + firstResult.getString("poster_path"));
-                movie.setReleaseDate(firstResult.getString("release_date"));
-                movie.setDescription(firstResult.getString("overview"));
-
+                movie.setPosterPath("https://image.tmdb.org/t/p/w500" + firstResult.optString("poster_path", ""));
+                movie.setReleaseDate(formatYear(firstResult.optString("release_date", "")));
+                movie.setDescription(firstResult.optString("overview", ""));
                 fetchDirector(movie, firstResult.getInt("id"), apiKey);
             }
 
@@ -141,7 +184,7 @@ public class Main {
             for (int i = 0; i < crew.length(); i++) {
                 JSONObject person = crew.getJSONObject(i);
                 if (person.getString("job").equals("Director")) {
-                    movie.setDirector(person.getString("name"));
+                    movie.setDirector(person.optString("name", "Desconhecido"));
                     break;
                 }
             }
@@ -151,7 +194,13 @@ public class Main {
         }
     }
 
-    public class Config {
+    private static String formatYear(String date) {
+        if (date == null || date.isEmpty()) return "Desconhecido";
+        String[] parts = date.split("-");
+        return (parts.length >= 1) ? parts[0] : date;
+    }
+
+    public static class Config {
         private static final Dotenv dotenv = Dotenv.load();
 
         public static String getApiKey() {

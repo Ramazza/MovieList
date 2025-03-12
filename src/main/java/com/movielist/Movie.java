@@ -4,13 +4,13 @@ public class Movie {
 
     private String name;
     private int date;
-    private int score;
+    private double score;
     private String posterPath;
     private String director;
     private String releaseDate;
     private String description;
 
-    public Movie(String name, int date, int score) {
+    public Movie(String name, int date, double score) {
         this.name = name;
         this.date = date;
         this.score = score;
@@ -19,7 +19,7 @@ public class Movie {
     // Getters e Setters
     public String getName() { return name; }
     public int getDate() { return date; }
-    public int getScore() { return score; }
+    public double getScore() { return score; }
     public String getPosterPath() { return posterPath; }
     public String getDirector() { return director; }
     public String getReleaseDate() { return releaseDate; }
