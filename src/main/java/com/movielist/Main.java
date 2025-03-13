@@ -127,10 +127,10 @@ public class Main {
     public static void fetchMovieDetails(Movie movie) {
         String apiKey = Config.getApiKey();
         String query = movie.getName().replace(" ", "%20");
-        String urlString = "https://api.themoviedb.org/3/search/movie?query=" + query + "&api_key=" + apiKey + "&language=pt-BR";
+        String searchUrl = "https://api.themoviedb.org/3/search/movie?query=" + query + "&api_key=" + apiKey + "&language=pt-BR";
 
         try {
-            URL url = new URL(urlString);
+            URL url = new URL(searchUrl);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
             conn.setRequestProperty("Accept", "application/json");
@@ -151,10 +151,30 @@ public class Main {
 
             if (results.length() > 0) {
                 JSONObject firstResult = results.getJSONObject(0);
+                int movieId = firstResult.getInt("id");
+
+                String detailsUrl = "https://api.themoviedb.org/3/movie/" + movieId + "?api_key=" + apiKey + "&language=pt-BR";
+                URL detailsEndpoint = new URL(detailsUrl);
+                HttpURLConnection detailsConn = (HttpURLConnection) detailsEndpoint.openConnection();
+                detailsConn.setRequestMethod("GET");
+                detailsConn.setRequestProperty("Accept", "application/json");
+
+                Scanner detailsScanner = new Scanner(detailsEndpoint.openStream());
+                StringBuilder detailsJsonString = new StringBuilder();
+                while (detailsScanner.hasNext()) {
+                    detailsJsonString.append(detailsScanner.nextLine());
+                }
+                detailsScanner.close();
+
+                JSONObject movieDetails = new JSONObject(detailsJsonString.toString());
+
                 movie.setPosterPath("https://image.tmdb.org/t/p/w500" + firstResult.optString("poster_path", ""));
-                movie.setReleaseDate(formatYear(firstResult.optString("release_date", "")));
-                movie.setDescription(firstResult.optString("overview", ""));
-                fetchDirector(movie, firstResult.getInt("id"), apiKey);
+                movie.setReleaseDate(movieDetails.optString("release_date", "Desconhecido"));
+                movie.setDescription(movieDetails.optString("overview", ""));
+                movie.setDuration(movieDetails.optInt("runtime", 0)); // Duração do filme
+                movie.setImdbRating(movieDetails.optDouble("vote_average", 0.0)); // Nota IMDb
+
+                fetchDirectorAndActors(movie, movieId, apiKey);
             }
 
         } catch (Exception e) {
@@ -162,7 +182,7 @@ public class Main {
         }
     }
 
-    private static void fetchDirector(Movie movie, int movieId, String apiKey) {
+    private static void fetchDirectorAndActors(Movie movie, int movieId, String apiKey) {
         String urlString = "https://api.themoviedb.org/3/movie/" + movieId + "/credits?api_key=" + apiKey;
 
         try {
@@ -180,6 +200,7 @@ public class Main {
 
             JSONObject json = new JSONObject(jsonString.toString());
             JSONArray crew = json.getJSONArray("crew");
+            JSONArray cast = json.getJSONArray("cast");
 
             for (int i = 0; i < crew.length(); i++) {
                 JSONObject person = crew.getJSONObject(i);
@@ -188,6 +209,13 @@ public class Main {
                     break;
                 }
             }
+
+            List<String> actors = new ArrayList<>();
+            for (int i = 0; i < Math.min(5, cast.length()); i++) { // Pega os 5 primeiros atores
+                JSONObject actor = cast.getJSONObject(i);
+                actors.add(actor.optString("name", "Desconhecido"));
+            }
+            movie.setActors(actors);
 
         } catch (Exception e) {
             e.printStackTrace();
